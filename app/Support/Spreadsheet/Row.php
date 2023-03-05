@@ -6,10 +6,12 @@ use App\Models\Saldo;
 use App\Services\DateRecognize;
 use App\Support\Enum\Saldo\CompareType;
 use App\Support\Enum\SpreadsheetHeader;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Carbon;
 use InvalidArgumentException;
 use PhpOffice\PhpSpreadsheet\Style\Fill;
 use PhpOffice\PhpSpreadsheet\Worksheet\Row as BaseRow;
+use Throwable;
 
 class Row
 {
@@ -30,6 +32,9 @@ class Row
      */
     private array $raw;
 
+    /**
+     * @throws \Throwable
+     */
     public function __construct(
         protected Spreadsheet $spreadsheet,
         protected BaseRow $row
@@ -42,6 +47,9 @@ class Row
             ->colorize(0xFFFFFF);
     }
 
+    /**
+     * @throws \Throwable
+     */
     public static function make(Spreadsheet $spreadsheet, BaseRow $row): static
     {
         $id = spl_object_id($row);
@@ -105,16 +113,37 @@ class Row
         return $this;
     }
 
-    private function guessField(string $fieldName): string
+    private function guessField(string $fieldName): string|array
     {
         return match (true) {
             is_string($this->raw[$fieldName]) => $this->raw[$fieldName],
             is_array($this->raw[$fieldName]) => array_values(array_filter(
                 $this->raw[$fieldName],
                 fn ($value): bool => $value !== '#NULL!'
-            ))[0],
+            )),
             default => throw new InvalidArgumentException(__('Invalid data type for '.$fieldName)),
         };
+    }
+
+    /**
+     * @throws \Throwable
+     */
+    private function prepareWrapper(callable $handler, mixed $values): static
+    {
+        $values = Arr::wrap($values);
+
+        foreach ($values as $value) {
+            try {
+                if ($handler($value) === false) {
+                    continue;
+                }
+
+                return $this;
+            } catch (Throwable $exception) {
+            }
+        }
+
+        throw $exception ?? new InvalidArgumentException();
     }
 
     private static function prepareFloat($value): float
@@ -134,45 +163,60 @@ class Row
         throw new InvalidArgumentException(__('Invalid data type for float'));
     }
 
+    /**
+     * @throws \Throwable
+     */
     private function prepareDate(): static
     {
-        $this->date = DateRecognize::make(
-            $this->guessField(SpreadsheetHeader::DATE)
+        return $this->prepareWrapper(
+            fn ($value) => $this->date = DateRecognize::make($value),
+            $this->guessField(SpreadsheetHeader::DATE),
         );
-
-        return $this;
     }
 
+    /**
+     * @throws \Throwable
+     */
     private function prepareDocument(): static
     {
-        $rawDocument = $this->guessField(SpreadsheetHeader::DOCUMENT);
-        $this->nomination_date = DateRecognize::make($rawDocument);
+        return $this->prepareWrapper(
+            function ($rawDocument) {
+                $this->nomination_date = DateRecognize::make($rawDocument);
 
-        if (! preg_match("/(?P<number>[\d\/]+) от/", $rawDocument, $matches)) {
-            throw new InvalidArgumentException(__('Invalid data type for document'));
-        }
+                if (! preg_match("/(?P<number>[\d\/]+) от/", $rawDocument, $matches)) {
+                    throw new InvalidArgumentException(__('Invalid data type for document'));
+                }
 
-        $this->nomination_number = $matches['number'];
-
-        return $this;
+                $this->nomination_number = $matches['number'];
+            },
+            $this->guessField(SpreadsheetHeader::DOCUMENT),
+        );
     }
 
+    /**
+     * @throws \Throwable
+     */
     private function prepareDebit(): static
     {
-        $rawDebit = $this->guessField(SpreadsheetHeader::DEBIT);
-
-        $this->debit = static::prepareFloat($rawDebit);
-
-        return $this;
+        return $this->prepareWrapper(
+            fn ($value) => $this->debit = static::prepareFloat($value),
+            collect($this->guessField(SpreadsheetHeader::DEBIT))
+                ->push(0)
+                ->all(),
+        );
     }
 
+    /**
+     * @throws \Throwable
+     */
     private function prepareCredit(): static
     {
-        $rawCredit = $this->guessField(SpreadsheetHeader::CREDIT);
-
-        $this->credit = static::prepareFloat($rawCredit);
-
-        return $this;
+        return $this->prepareWrapper(
+            fn ($value) => $this->credit = static::prepareFloat($value),
+            collect($this->guessField(SpreadsheetHeader::CREDIT))
+                ->push(0)
+                ->all(),
+        );
     }
 
     protected function getSaldo(): Saldo
