@@ -32,6 +32,11 @@ class Spreadsheet
     protected ?int $startRow = null;
 
     /**
+     * @var \App\Support\Spreadsheet\Row[]
+     */
+    protected array $rawCache = [];
+
+    /**
      * @throws \PhpOffice\PhpSpreadsheet\Exception
      */
     public function __construct(protected SaldoFile $file)
@@ -163,7 +168,7 @@ class Spreadsheet
 
         foreach ($worksheet->getRowIterator($this->startRow) as $row) {
             try {
-                yield Row::make($this, $row);
+                yield $this->rawCache[] = Row::make($this, $row);
             } catch (Throwable) {
                 continue;
             }
